@@ -25,10 +25,6 @@ rootProject.allprojects {
 apply plugin: 'com.android.library'
 apply plugin: 'kotlin-android'
 
-plugins {
-    id 'org.vackosar.git-dependencies' version '0.1.1'
-}
-
 android {
     if (project.android.hasProperty("namespace")) {
         namespace 'com.cloudwebrtc.webrtc'
@@ -56,9 +52,7 @@ android {
 }
 
 dependencies {
-    implementation git('https://github.com/CaptainTeemo/webrtc-android.git') {
-        branch = 'main'
-    }
+    implementation 'com.github.CaptainTeemo:webrtc-android:v137.7777.82'
     implementation 'com.github.davidliu:audioswitch:89582c47c9a04c62f90aa5e57251af4800a62c9a'
     implementation 'androidx.annotation:annotation:1.1.0'
     implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk7:$kotlin_version"
