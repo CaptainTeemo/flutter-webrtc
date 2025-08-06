@@ -29,14 +29,24 @@ public class FlutterRTCVideoRenderer implements EventChannel.StreamHandler {
 
     public void Dispose() {
         //destroy
+        if (videoTrack != null) {
+            removeRendererFromVideoTrack();
+            videoTrack = null;
+        }
+        
         if (surfaceTextureRenderer != null) {
             surfaceTextureRenderer.release();
         }
+        
         if (eventChannel != null)
             eventChannel.setStreamHandler(null);
 
         eventSink = null;
-        producer.release();
+        isInitialized = false;
+        
+        if (producer != null) {
+            producer.release();
+        }
     }
 
     /**
@@ -91,6 +101,7 @@ public class FlutterRTCVideoRenderer implements EventChannel.StreamHandler {
     }
 
     private final SurfaceTextureRenderer surfaceTextureRenderer;
+    private volatile boolean isInitialized = false;
 
     /**
      * The {@code VideoTrack}, if any, rendered by this {@code FlutterRTCVideoRenderer}.
@@ -103,8 +114,16 @@ public class FlutterRTCVideoRenderer implements EventChannel.StreamHandler {
     public FlutterRTCVideoRenderer(TextureRegistry.SurfaceProducer producer) {
         this.surfaceTextureRenderer = new SurfaceTextureRenderer("");
         listenRendererEvents();
-        surfaceTextureRenderer.init(EglUtils.getRootEglBaseContext(), rendererEvents);
-        surfaceTextureRenderer.surfaceCreated(producer);
+        
+        // Initialize once during construction
+        EglBase.Context sharedContext = EglUtils.getRootEglBaseContext();
+        if (sharedContext != null) {
+            surfaceTextureRenderer.init(sharedContext, rendererEvents);
+            surfaceTextureRenderer.surfaceCreated(producer);
+            isInitialized = true;
+        } else {
+            Log.e(TAG, "Failed to get EGL context during renderer construction");
+        }
 
         this.eventSink = null;
         this.producer = producer;
@@ -134,7 +153,10 @@ public class FlutterRTCVideoRenderer implements EventChannel.StreamHandler {
      * resources (if rendering is in progress).
      */
     private void removeRendererFromVideoTrack() {
-        videoTrack.removeSink(surfaceTextureRenderer);
+        if (videoTrack != null && surfaceTextureRenderer != null) {
+            Log.d(TAG, "Removing renderer from video track: " + videoTrack.id());
+            videoTrack.removeSink(surfaceTextureRenderer);
+        }
     }
 
     /**
@@ -201,6 +223,7 @@ public class FlutterRTCVideoRenderer implements EventChannel.StreamHandler {
 
         if (oldValue != videoTrack) {
             if (oldValue != null) {
+                Log.d(TAG, "Removing old video track: " + oldValue.id());
                 removeRendererFromVideoTrack();
             }
 
@@ -208,14 +231,24 @@ public class FlutterRTCVideoRenderer implements EventChannel.StreamHandler {
 
             if (videoTrack != null) {
                 try {
-                    Log.w(TAG, "FlutterRTCVideoRenderer.setVideoTrack, set video track to " + videoTrack.id());
+                    Log.d(TAG, "Setting new video track: " + videoTrack.id());
                     tryAddRendererToVideoTrack();
                 } catch (Exception e) {
-                    Log.e(TAG, "tryAddRendererToVideoTrack " + e);
+                    Log.e(TAG, "Failed to add renderer to video track: " + e.getMessage());
+                    
+                    // Try surface recreation as last resort
+                    try {
+                        Log.w(TAG, "Attempting surface recreation as fallback");
+                        recreateSurfaceRenderer();
+                    } catch (Exception recreateException) {
+                        Log.e(TAG, "Surface recreation also failed: " + recreateException.getMessage());
+                    }
                 }
             } else {
-                Log.w(TAG, "FlutterRTCVideoRenderer.setVideoTrack, set video track to null");
+                Log.d(TAG, "Video track set to null");
             }
+        } else {
+            Log.d(TAG, "Video track unchanged, skipping update");
         }
     }
 
@@ -224,22 +257,71 @@ public class FlutterRTCVideoRenderer implements EventChannel.StreamHandler {
      * all preconditions for the start of rendering are met.
      */
     private void tryAddRendererToVideoTrack() throws Exception {
-        if (videoTrack != null) {
+        if (videoTrack != null && isInitialized) {
+            // Simply add the video track as sink without recreating the surface
+            // The surface renderer is already initialized and ready
+            Log.d(TAG, "Adding video track as sink to existing surface renderer");
+            videoTrack.addSink(surfaceTextureRenderer);
+        } else if (videoTrack != null && !isInitialized) {
+            // Fallback: try to initialize if not already done
+            Log.w(TAG, "Surface renderer not initialized, attempting to initialize now");
             EglBase.Context sharedContext = EglUtils.getRootEglBaseContext();
-
+            
             if (sharedContext == null) {
-                // If SurfaceViewRenderer#init() is invoked, it will throw a
-                // RuntimeException which will very likely kill the application.
-                Log.e(TAG, "Failed to render a VideoTrack!");
+                Log.e(TAG, "Failed to render a VideoTrack - no EGL context!");
                 return;
             }
+            
+            try {
+                surfaceTextureRenderer.init(sharedContext, rendererEvents);
+                surfaceTextureRenderer.surfaceCreated(producer);
+                isInitialized = true;
+                videoTrack.addSink(surfaceTextureRenderer);
+                Log.d(TAG, "Successfully initialized surface renderer and added video track");
+            } catch (Exception e) {
+                Log.e(TAG, "Failed to initialize surface renderer: " + e);
+                throw e;
+            }
+        }
+    }
 
-            surfaceTextureRenderer.release();
+    /**
+     * Force surface recreation - only call when absolutely necessary
+     * (e.g., EGL context lost, surface corruption)
+     */
+    private void recreateSurfaceRenderer() throws Exception {
+        Log.w(TAG, "Force recreating surface renderer - this may cause frame drops");
+        
+        // Remove current video track sink
+        if (videoTrack != null) {
+            videoTrack.removeSink(surfaceTextureRenderer);
+        }
+        
+        // Release current surface
+        surfaceTextureRenderer.release();
+        isInitialized = false;
+        
+        // Small delay to ensure cleanup completes
+        try {
+            Thread.sleep(16); // ~1 frame at 60fps
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+        
+        // Reinitialize
+        EglBase.Context sharedContext = EglUtils.getRootEglBaseContext();
+        if (sharedContext != null) {
             listenRendererEvents();
             surfaceTextureRenderer.init(sharedContext, rendererEvents);
             surfaceTextureRenderer.surfaceCreated(producer);
-
-            videoTrack.addSink(surfaceTextureRenderer);
+            isInitialized = true;
+            
+            // Re-add video track
+            if (videoTrack != null) {
+                videoTrack.addSink(surfaceTextureRenderer);
+            }
+        } else {
+            throw new Exception("Cannot recreate surface renderer - no EGL context");
         }
     }
 
