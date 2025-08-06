@@ -196,9 +196,6 @@ static FlutterWebRTCPlugin *sharedSingleton;
                                              object:session];
 #endif
 
-  // Observe audio device module events.
-  _peerConnectionFactory.audioDeviceModule.observer = self;
-
   return self;
 }
 
@@ -253,11 +250,8 @@ bypassVoiceProcessing:(BOOL)bypassVoiceProcessing {
             [[VideoEncoderFactorySimulcast alloc] initWithPrimary:encoderFactory fallback:encoderFactory];
 
         _peerConnectionFactory =
-            [[RTCPeerConnectionFactory alloc] initWithAudioDeviceModuleType:RTCAudioDeviceModuleTypeAudioEngine
-                                                      bypassVoiceProcessing:bypassVoiceProcessing
-                                                             encoderFactory:simulcastFactory
-                                                             decoderFactory:decoderFactory
-                                                      audioProcessingModule:_audioManager.audioProcessingModule];
+            [[RTCPeerConnectionFactory alloc] initWithEncoderFactory:simulcastFactory
+                                                       decoderFactory:decoderFactory];
 
         RTCPeerConnectionFactoryOptions *options = [[RTCPeerConnectionFactoryOptions alloc] init];
         for (NSString* adapter in networkIgnoreMask)
@@ -2377,7 +2371,7 @@ bypassVoiceProcessing:(BOOL)bypassVoiceProcessing {
     return nil;
 }
 
-#pragma mark - RTCAudioDeviceModuleDelegate methods
+#pragma mark - RTCAudioDeviceDelegate methods
 
 - (void)audioDeviceModuleDidUpdateDevices:(RTCAudioDeviceModule *)audioDeviceModule {
     NSLog(@"audioDeviceModule did update devices");
